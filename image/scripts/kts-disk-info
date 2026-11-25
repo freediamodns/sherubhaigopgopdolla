@@ -1,0 +1,6 @@
+#!/bin/sh
+echo "KTS HOST storage note:"
+echo "This container currently uses Docker's shared backing filesystem."
+echo "A requested disk size is not a hard per-customer quota on this nested-LXC host."
+df -h /
+df -h /opt/kts-storage 2>/dev/null || true

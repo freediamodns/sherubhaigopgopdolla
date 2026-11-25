@@ -1,0 +1,168 @@
+#!/usr/bin/python3
+"""
+KTS HOST guest resource compatibility layer.
+Reports the guest's configured RAM and CPU quota; it does not claim dedicated cores.
+"""
+import os, sys, math, shutil, subprocess, pathlib, textwrap
+
+RAM_GIB = max(0.25, float(os.getenv("KTS_RAM_GIB", "1")))
+CPU_QUOTA = max(0.1, float(os.getenv("KTS_CPU_QUOTA", "1")))
+DISK_REQUEST_GIB = max(1, float(os.getenv("KTS_DISK_REQUEST_GIB", "10")))
+RAM_BYTES = int(RAM_GIB * (1024**3))
+VCPUS = max(1, math.ceil(CPU_QUOTA))
+NAME = pathlib.Path(sys.argv[0]).name
+ARGS = sys.argv[1:]
+
+def human(n):
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    x = float(n)
+    for u in units:
+        if x < 1024 or u == units[-1]:
+            return f"{x:.1f}{u}"
+        x /= 1024
+    return f"{x:.1f}TiB"
+
+def read_cgroup(path):
+    try: return pathlib.Path(path).read_text().strip()
+    except Exception: return ""
+
+def memory_current():
+    v = read_cgroup("/sys/fs/cgroup/memory.current")
+    if not v.isdigit():
+        v = read_cgroup("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    if v.isdigit(): return min(int(v), RAM_BYTES)
+    return 0
+
+def meminfo():
+    used = memory_current()
+    available = max(0, RAM_BYTES - used)
+    # Linux /proc/meminfo values are kB. Values describe the configured guest limit.
+    vals = [
+        ("MemTotal", RAM_BYTES // 1024), ("MemFree", available // 1024),
+        ("MemAvailable", available // 1024), ("Buffers", 0),
+        ("Cached", 0), ("SwapCached", 0), ("Active", used // 1024),
+        ("Inactive", 0), ("Active(anon)", used // 1024), ("Inactive(anon)", 0),
+        ("Active(file)", 0), ("Inactive(file)", 0), ("Unevictable", 0),
+        ("Mlocked", 0), ("SwapTotal", 0), ("SwapFree", 0),
+        ("Dirty", 0), ("Writeback", 0), ("AnonPages", used // 1024),
+        ("Mapped", 0), ("Shmem", 0), ("Slab", 0), ("SReclaimable", 0),
+        ("SUnreclaim", 0), ("KernelStack", 0), ("PageTables", 0),
+        ("CommitLimit", RAM_BYTES // 2048), ("Committed_AS", used // 1024),
+    ]
+    return "".join(f"{k}: {v:>12} kB\n" for k,v in vals)
+
+def cpuinfo():
+    blocks = []
+    for i in range(VCPUS):
+        blocks.append(
+            f"processor\t: {i}\n"
+            "vendor_id\t: KTSVPS\n"
+            "cpu family\t: 0\n"
+            "model\t\t: 0\n"
+            "model name\t: KTS Virtual CPU (shared quota)\n"
+            "stepping\t: 0\n"
+            "cpu MHz\t\t: 0.000\n"
+            "cache size\t: 0 KB\n"
+            "physical id\t: 0\n"
+            f"core id\t\t: {i}\n"
+            "siblings\t: 1\n"
+            "cpu cores\t: 1\n"
+            "flags\t\t: virtual\n"
+        )
+    return "\n".join(blocks)
+
+def run_real(cmd=None):
+    cmd = cmd or NAME
+    path = shutil.which(cmd, path="/usr/bin:/bin:/usr/sbin:/sbin")
+    if not path:
+        print(f"{NAME}: command not found", file=sys.stderr); return 127
+    return subprocess.call([path, *ARGS])
+
+def output_free():
+    used = memory_current()
+    free = max(0, RAM_BYTES-used)
+    if "-b" in ARGS: div, unit = 1, "B"
+    elif "-k" in ARGS: div, unit = 1024, "KiB"
+    elif "-m" in ARGS: div, unit = 1024**2, "MiB"
+    else: div, unit = 1024**2, "MiB"
+    total, usedn, freen = RAM_BYTES//div, used//div, free//div
+    if "-h" in ARGS or not any(x in ARGS for x in ("-b","-k","-m")):
+        def fmt(x): return human(x)
+        print("               total        used        free      shared  buff/cache   available")
+        print(f"Mem:       {fmt(RAM_BYTES):>10}  {fmt(used):>10}  {fmt(free):>10}  {fmt(0):>10}  {fmt(0):>10}  {fmt(free):>10}")
+        print(f"Swap:      {fmt(0):>10}  {fmt(0):>10}  {fmt(0):>10}")
+    else:
+        print("               total        used        free      shared  buff/cache   available")
+        print(f"Mem: {total:>12} {usedn:>11} {freen:>11} {0:>11} {0:>11} {freen:>11}")
+        print(f"Swap: {0:>11} {0:>11} {0:>11}")
+    return 0
+
+def output_lscpu():
+    print(f"Architecture:                         {os.uname().machine}")
+    print(f"CPU op-mode(s):                       32-bit, 64-bit")
+    print(f"CPU(s):                               {VCPUS}")
+    print(f"On-line CPU(s) list:                  0-{VCPUS-1}")
+    print(f"Thread(s) per core:                   1")
+    print(f"Core(s) per socket:                   {VCPUS}")
+    print(f"Socket(s):                            1")
+    print(f"Vendor ID:                            KTSVPS")
+    print(f"Model name:                           KTS Virtual CPU (shared quota)")
+    print(f"CPU quota:                            {CPU_QUOTA:g} CPU-equivalent")
+    print("CPU allocation:                       shared scheduling quota, not dedicated cores")
+    print(f"Virtualization:                       container")
+    return 0
+
+def output_fastfetch():
+    print(f"OS: Ubuntu 24.04 (KTS VPS)")
+    print(f"Host: KTS Virtual VPS")
+    print(f"Kernel: {os.uname().release}")
+    print(f"CPU: KTS Virtual CPU ({CPU_QUOTA:g} shared quota; {VCPUS} visible vCPU entries)")
+    print(f"Memory: {human(memory_current())} / {human(RAM_BYTES)}")
+    print("Disk: see df -h (shared backing filesystem; requested disk is not a hard quota)")
+    return 0
+
+def output_df():
+    # Keep actual filesystem capacity honest. Show requested volume separately.
+    return run_real("df")
+
+def output_nproc():
+    if "--all" in ARGS:
+        print(VCPUS)
+    else:
+        print(max(1, int(CPU_QUOTA)))
+    return 0
+
+def output_getconf():
+    if ARGS and ARGS[0] == "_NPROCESSORS_ONLN":
+        print(VCPUS); return 0
+    return run_real("getconf")
+
+def output_proc_file():
+    if len(ARGS) >= 1 and ARGS[0] == "/proc/meminfo":
+        print(meminfo(), end=""); return 0
+    if len(ARGS) >= 1 and ARGS[0] == "/proc/cpuinfo":
+        print(cpuinfo(), end=""); return 0
+    return run_real()
+
+def main():
+    if ARGS and ARGS[0] == "--generate-meminfo":
+        print(meminfo(), end=""); return 0
+    if ARGS and ARGS[0] == "--generate-cpuinfo":
+        print(cpuinfo(), end=""); return 0
+    if NAME in ("free", "kts-free"):
+        return output_free()
+    if NAME in ("nproc",):
+        return output_nproc()
+    if NAME == "lscpu":
+        return output_lscpu()
+    if NAME == "getconf":
+        return output_getconf()
+    if NAME in ("fastfetch", "neofetch", "screenfetch", "ktsfetch"):
+        return output_fastfetch()
+    if NAME == "cat" and ARGS and ARGS[0] in ("/proc/meminfo", "/proc/cpuinfo"):
+        return output_proc_file()
+    # The remaining compatibility entry points preserve normal Ubuntu behavior.
+    return run_real()
+
+if __name__ == "__main__":
+    sys.exit(main())

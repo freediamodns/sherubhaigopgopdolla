@@ -1,0 +1,9 @@
+#!/bin/bash
+set -euo pipefail
+mkdir -p /run/kts
+/usr/local/lib/kts/kts-system-compat --generate-meminfo >/run/kts/meminfo 2>/dev/null || true
+/usr/local/lib/kts/kts-system-compat --generate-cpuinfo >/run/kts/cpuinfo 2>/dev/null || true
+# Bind mounts are best-effort: some outer LXC/container configurations prohibit them.
+mount --bind /run/kts/meminfo /proc/meminfo 2>/dev/null || true
+mount --bind /run/kts/cpuinfo /proc/cpuinfo 2>/dev/null || true
+exit 0
