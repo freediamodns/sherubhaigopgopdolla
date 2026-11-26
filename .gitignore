@@ -1,4 +1,13 @@
 .env
+.venv/
+venv/
 __pycache__/
 *.pyc
+*.log
+*.tmp
+
+# Private VPS data
+/opt/kts-vps-bot/data/
 data/
+vps.json
+admins.json
